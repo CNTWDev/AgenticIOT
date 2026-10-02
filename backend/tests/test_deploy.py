@@ -104,6 +104,11 @@ def test_install_generates_secrets_and_bootstraps_once(deployment):
     assert result.returncode == 0, result.stderr
     for number in range(1, 10):
         assert f"[{number}/9]" in result.stdout
+    documented_stages = [
+        line for line in (ROOT / "README.md").read_text().splitlines() if "/9] " in line
+    ]
+    assert len(documented_stages) == 9
+    assert all(stage in result.stdout for stage in documented_stages)
     config = (root / "config.env").read_text()
     assert "POSTGRES_PASSWORD=" in config
     token = json.loads(config.split("AGENTICIOT_API_CLIENTS=", 1)[1])[0]["token"]
@@ -176,6 +181,20 @@ def test_refuses_unknown_operation_and_broad_path(deployment):
     assert not any(c[0] == "docker" for c in calls)
 
 
+def test_installer_help_and_sources_are_english(deployment):
+    _, run = deployment
+    for relative in ("scripts/deploy.sh", "scripts/lib/deploy-environment.sh"):
+        assert (ROOT / relative).read_text().isascii()
+    result, calls = run("--help")
+    assert result.returncode == 0
+    assert "Usage:" in result.stdout and "Buildx" in result.stdout
+    assert calls == []
+    result, calls = run("install", "--unexpected-option")
+    assert result.returncode != 0
+    assert "ERROR [Validate arguments]: Unknown argument:" in result.stderr
+    assert calls == []
+
+
 def test_environment_check_is_read_only_and_actionable(deployment):
     root, run = deployment
     before = sorted(root.iterdir())
@@ -185,7 +204,8 @@ def test_environment_check_is_read_only_and_actionable(deployment):
     result, _ = run("check", DEPLOY_TEST_NO_COMPOSE="1")
     assert result.returncode != 0 and "--install-docker" in result.stderr
     result, _ = run("install", "--install-docker", DEPLOY_TEST_DOCKER_DOWN="1")
-    assert result.returncode != 0 and "不会因权限/连接问题重装" in result.stderr
+    assert result.returncode != 0
+    assert "will not be reinstalled for permission or connection errors" in result.stderr
     assert sorted(root.iterdir()) == before
 
 

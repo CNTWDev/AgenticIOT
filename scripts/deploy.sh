@@ -10,7 +10,7 @@ INSTALL_DOCKER=0
 TARGET=''
 STEP_NUMBER=0
 STEP_TOTAL=9
-CURRENT_STEP='参数检查'
+CURRENT_STEP='Validate arguments'
 STARTED_AT=$SECONDS
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -20,7 +20,7 @@ usage() {
   printf '%s\n' \
     'Usage: bash scripts/deploy.sh check|install|upgrade|start|stop|restart|status|logs|backup|rollback SHA' \
     'Optional: install --install-docker (explicitly install missing Docker components on supported apt/systemd hosts).' \
-    'Requires Linux, Git, OpenSSL, flock and Docker Engine with Compose v2 (--wait support).' \
+    'Requires Linux, Git, OpenSSL, flock, tar, realpath, Docker Engine, Compose v2 (--wait support), and Buildx.' \
     'Default directory: /opt/agenticiot; override with AGENTICIOT_DEPLOY_DIR.' \
     'One installation per host. Services bind only to 127.0.0.1. No package changes without --install-docker.'
 }
@@ -33,8 +33,8 @@ shift
 if [[ "$ACTION" == rollback ]]; then TARGET=${1:-}; [[ $# == 0 ]] || shift; fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --install-docker) [[ "$ACTION" == install ]] || die '--install-docker 只允许用于 install。'; INSTALL_DOCKER=1 ;;
-    *) die "未知参数：$1" ;;
+    --install-docker) [[ "$ACTION" == install ]] || die '--install-docker is only supported with install.'; INSTALL_DOCKER=1 ;;
+    *) die "Unknown argument: $1" ;;
   esac
   shift
 done
@@ -44,8 +44,8 @@ case "$ACTION" in
   start|restart) STEP_TOTAL=4 ;;
   stop|status|logs|backup) STEP_TOTAL=3 ;;
 esac
-step '检测操作系统、基础工具和 Docker 环境'
-trap 'printf "ERROR [%s]: 环境准备失败，请检查上方错误；不会继续部署。\n" "$CURRENT_STEP" >&2' ERR
+step 'Check the operating system, base tools, and Docker'
+trap 'printf "ERROR [%s]: Environment preparation failed. Review the error above; deployment will not continue.\n" "$CURRENT_STEP" >&2' ERR
 [[ $(uname -s) == Linux ]] || die 'Run deployment on a Linux server.'
 [[ "$DEPLOY_ROOT" == /* && "$DEPLOY_ROOT" != *'/../'* && "$DEPLOY_ROOT" != *'/./'* ]] || die 'Use an absolute dedicated directory.'
 case "${DEPLOY_ROOT%/}" in
@@ -59,8 +59,8 @@ SCRIPT_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib/deploy-environment.sh
 source "$SCRIPT_DIRECTORY/lib/deploy-environment.sh"
 ensure_docker
-if [[ "$ACTION" == check ]]; then log '环境检查通过，未创建部署目录、未安装软件。'; exit 0; fi
-step '检查部署目录并获取操作锁'
+if [[ "$ACTION" == check ]]; then log 'Environment check passed. No deployment directory was created and no packages were installed.'; exit 0; fi
+step 'Validate the deployment directory and acquire the operation lock'
 [[ ! -L "$DEPLOY_ROOT" ]] || die 'Installation root must not be a symlink.'
 if [[ ! -d "$DEPLOY_ROOT" ]]; then
   [[ "$ACTION" == install ]] || die 'Not installed.'
@@ -100,7 +100,7 @@ safe_state() {
 backup() {
   local destination
   destination=$(mktemp -d "$DEPLOY_ROOT/backups/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
-  log '备份数据库及配置，并检查归档目录；大数据库需要更长时间。'
+  log 'Back up the database and configuration, then validate the archive directory. Large databases may take longer.'
   cp "$CONFIG" "$destination/config.env"
   printf '%s\n' "$RELEASE_SHA" > "$destination/release"
   compose exec -T postgres pg_dump -U agenticiot -d agenticiot -Fc > "$destination/database.dump.partial"
@@ -110,9 +110,9 @@ backup() {
   printf 'Backup (contains secrets): %s\n' "$destination"
 }
 start_apps() {
-  log '启动 API，等待就绪检查（最多 120 秒）。'
+  log 'Start the API and wait for readiness (up to 120 seconds).'
   compose up -d --no-deps --no-build --pull never --wait --wait-timeout 120 api
-  log '启动管理后台，等待健康检查（最多 120 秒）。'
+  log 'Start the Admin console and wait for health checks (up to 120 seconds).'
   compose up -d --no-deps --no-build --pull never --wait --wait-timeout 120 admin
 }
 finish_release() {
@@ -120,12 +120,12 @@ finish_release() {
   mv "$DEPLOY_ROOT/current.new" "$DEPLOY_ROOT/current"
   mv "$DEPLOY_ROOT/pending" "$DEPLOY_ROOT/last-success"
   printf 'Ready: %s\nAdmin: http://127.0.0.1:5173  API: http://127.0.0.1:8000\n' "$RELEASE_SHA"
-  log "操作成功，总耗时 $((SECONDS - STARTED_AT)) 秒；配置位于 ${CONFIG}（不要公开）。"
+  log "Operation succeeded in $((SECONDS - STARTED_AT)) seconds. Configuration: ${CONFIG} (keep private)."
 }
 failure() {
   local status=${1:-$?}
   trap - ERR
-  printf 'ERROR [%s]: 操作失败，已耗时 %s 秒。\n' "$CURRENT_STEP" "$((SECONDS - STARTED_AT))" >&2
+  printf 'ERROR [%s]: Operation failed after %s seconds.\n' "$CURRENT_STEP" "$((SECONDS - STARTED_AT))" >&2
   if [[ -f "$DEPLOY_ROOT/pending" ]]; then
     compose stop -t 25 admin api || true
     printf 'Deployment interrupted; apps stopped. Data/configuration retained. See docs/deployment/linux.md recovery.\n' >&2
@@ -147,7 +147,7 @@ case "$ACTION" in
     else
       current
     fi
-    step '从 GitHub 拉取 main 并确定部署版本'
+    step 'Fetch main from GitHub and select the release'
     if [[ ! -d "$DEPLOY_ROOT/repo.git" ]]; then
       git init --bare "$DEPLOY_ROOT/repo.git"
       git --git-dir="$DEPLOY_ROOT/repo.git" remote add origin "$REPOSITORY"
@@ -165,7 +165,7 @@ case "$ACTION" in
       mv "$stage" "$DEPLOY_ROOT/releases/$candidate"
     fi
     select_release "$candidate"
-    step '生成或保留配置，验证 Compose 配置'
+    step 'Create or preserve configuration and validate Compose settings'
     if [[ ! -f "$CONFIG" ]]; then
       [[ "$ACTION" == install ]] || die 'Missing configuration; never regenerate secrets on upgrade.'
       password=$(openssl rand -hex 32)
@@ -179,10 +179,10 @@ case "$ACTION" in
     chmod 600 "$CONFIG"
     compose config --quiet
     # Build before interrupting the running release; retain versioned images for rollback.
-    step '构建 API 和后台镜像，现有服务继续运行'
-    log '以下为 Docker 构建输出；首次下载和构建可能较慢，不显示虚假的时间百分比。'
+    step 'Build API and Admin images while the existing release stays online'
+    log 'Docker build output follows. Initial downloads and builds may take longer; no estimated percentage is shown.'
     compose build api admin
-    step '进入维护窗口并保护现有数据'
+    step 'Enter the maintenance window and protect existing data'
     if [[ "$ACTION" == upgrade ]]; then
       current
       printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
@@ -190,27 +190,27 @@ case "$ACTION" in
       backup
       select_release "$candidate"
     else
-      log '首次安装，无已有业务数据库需要升级前备份。'
+      log 'Initial installation: no existing application database requires a pre-upgrade backup.'
       printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
     fi
     # Never recreate PostgreSQL as part of an application upgrade.
-    step '启动数据库并执行迁移'
+    step 'Start PostgreSQL and apply migrations'
     compose up -d --no-recreate --wait --wait-timeout 120 postgres
     compose run --rm --no-deps migrate
     if [[ "$ACTION" == install ]]; then
-      log '显式初始化试点管理授权，不输出管理令牌。'
+      log 'Explicitly bootstrap pilot administration grants without printing the administration token.'
       compose run --rm --no-deps api python -m agenticiot.access.service
     fi
-    step '启动 API 和管理后台并验证健康状态'
+    step 'Start the API and Admin console and verify health'
     start_apps
-    step '记录成功版本并完成部署'
+    step 'Record the successful release and finish'
     finish_release
     ;;
   rollback)
     safe_state
     current
     old=$RELEASE_SHA
-    step '验证目标版本、迁移一致性和保留镜像'
+    step 'Validate the target release, migration compatibility, and retained images'
     target=$TARGET
     select_release "$target"
     old_schema=$(git --git-dir="$DEPLOY_ROOT/repo.git" rev-parse "$old:backend/migrations")
@@ -219,27 +219,27 @@ case "$ACTION" in
     compose config --quiet
     docker image inspect "agenticiot-api:$target" "agenticiot-admin:$target" >/dev/null
     select_release "$old"
-    step '停止应用并备份当前数据'
+    step 'Stop the applications and back up current data'
     printf '%s\n' "$target" > "$DEPLOY_ROOT/pending"
     compose stop -t 25 admin api
     backup
     select_release "$target"
-    step '启动回退版本并检查健康状态'
+    step 'Start the rollback release and verify health'
     start_apps
-    step '记录回退结果'
+    step 'Record the successful rollback'
     finish_release
     ;;
-  backup) step '创建备份'; current; backup ;;
+  backup) step 'Create a backup'; current; backup ;;
   start|restart)
     safe_state
     current
-    step '启动服务并检查健康状态'
+    step 'Start services and verify health'
     if [[ "$ACTION" == restart ]]; then compose stop -t 25 admin api; fi
     compose up -d --no-recreate --wait --wait-timeout 120 postgres
     start_apps
-    step '服务已就绪'
+    step 'Services are ready'
     ;;
-  stop) step '停止服务，保留所有数据'; current; compose stop -t 25 admin api postgres ;;
-  status) step '显示服务状态'; current; compose ps ;;
-  logs) step '显示最近 100 行服务日志'; current; compose logs --tail 100 api admin postgres ;;
+  stop) step 'Stop services while preserving all data'; current; compose stop -t 25 admin api postgres ;;
+  status) step 'Show service status'; current; compose ps ;;
+  logs) step 'Show the last 100 lines of service logs'; current; compose logs --tail 100 api admin postgres ;;
 esac

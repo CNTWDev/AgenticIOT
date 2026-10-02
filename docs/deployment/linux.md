@@ -27,7 +27,7 @@ ssh -L 5173:127.0.0.1:5173 -L 8000:127.0.0.1:8000 your-user@your-server
 
 浏览器打开 `http://127.0.0.1:5173`。在服务器上由管理员安全读取 `/opt/agenticiot/config.env` 中 `AGENTICIOT_API_CLIENTS` 的 token，填入管理后台。它是试点用静态入口凭证，不是用户注册体系，也不是 Node 凭证。不要把配置、令牌或备份发送到聊天、工单和 Git。
 
-安装和升级均按九个阶段输出时间、步骤编号和原生命令进度，失败时指出所处阶段。公网配置与 WSS 检查请参照 [README 的完整教程](../../README.md#公网-https-和-wss)及 [Caddyfile 示例](../../deploy/Caddyfile.example)。API 上游为 `127.0.0.1:8000`，Node 路径为 `/v1/nodes/channel`；不得用明文公网 HTTP 承载凭证。TLS 不取代可信入口签名验证和授权，另见 [Node 接入说明](../api/node-local-services.md)。
+安装和升级均按九个阶段输出时间、步骤编号和原生命令进度，失败时指出所处阶段。公网配置与 WSS 检查请参照 [README 的完整教程](../../README.md#public-https-and-wss)及 [Caddyfile 示例](../../deploy/Caddyfile.example)。API 上游为 `127.0.0.1:8000`，Node 路径为 `/v1/nodes/channel`；不得用明文公网 HTTP 承载凭证。TLS 不取代可信入口签名验证和授权，另见 [Node 接入说明](../api/node-local-services.md)。
 
 ## 升级和运维
 
