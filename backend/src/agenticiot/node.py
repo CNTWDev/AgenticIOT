@@ -30,6 +30,7 @@ class NodeRuntime:
         self.mqtt_port, self.mqtt_namespace = mqtt_port, mqtt_namespace
         self.services = services or {}
         self.control, self.data = asyncio.Queue(64), asyncio.Queue(32)
+        self.ready = asyncio.Event()
         self.bindings, self.jobs, self.calls = {}, {}, {}
         self.device_slots, self.read_slots = asyncio.Semaphore(8), asyncio.Semaphore(4)
         self.locks = {}
@@ -74,6 +75,7 @@ class NodeRuntime:
 
     async def emit(self, message, *, data=False):
         await asyncio.wait_for((self.data if data else self.control).put(message), 2)
+        self.ready.set()
 
     def prepare(self, command):
         if self.worker.db.execute(
@@ -292,6 +294,7 @@ class NodeRuntime:
     async def run_connection(self, url, token):
         # Prevent replay of stale prompt/delta buffers after a connection loss.
         self.control, self.data = asyncio.Queue(64), asyncio.Queue(32)
+        self.ready = asyncio.Event()
         async with connect(
             url,
             additional_headers={"Authorization": f"Bearer {token}"},
@@ -344,12 +347,14 @@ class NodeRuntime:
 
             async def writer():
                 while True:
+                    self.ready.clear()
                     try:
                         item = self.control.get_nowait()
                     except asyncio.QueueEmpty:
                         try:
-                            item = await asyncio.wait_for(self.data.get(), 0.05)
-                        except TimeoutError:
+                            item = self.data.get_nowait()
+                        except asyncio.QueueEmpty:
+                            await self.ready.wait()
                             continue
                     await asyncio.wait_for(ws.send(json.dumps(item)), 5)
 

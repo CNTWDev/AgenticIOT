@@ -40,11 +40,13 @@ class Connection:
     clock_offset: float | None = None
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     journal_stats: dict = field(default_factory=dict)
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def send(self, message, *, data=False):
         if self.closed:
             raise APIError(503, "node_offline", "Node disconnected")
         await asyncio.wait_for((self.data if data else self.control).put(message), 2)
+        self.ready.set()
 
 
 class Hub:
@@ -283,12 +285,14 @@ async def channel(websocket: WebSocket):
 
         async def writer():
             while not connection.closed:
+                connection.ready.clear()
                 try:
                     message = connection.control.get_nowait()
                 except asyncio.QueueEmpty:
                     try:
-                        message = await asyncio.wait_for(connection.data.get(), 0.05)
-                    except TimeoutError:
+                        message = connection.data.get_nowait()
+                    except asyncio.QueueEmpty:
+                        await connection.ready.wait()
                         continue
                 await asyncio.wait_for(websocket.send_json(message), 5)
 

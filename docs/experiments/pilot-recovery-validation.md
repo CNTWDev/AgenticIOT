@@ -13,6 +13,8 @@ Local validation uses macOS, Python 3.13 and a dedicated PostgreSQL 14 test clus
 
 The expanded burst test exposed a foreign-key lock cycle beyond the originally reported list/dispatch ordering issue. Resource-row locks now use NO KEY UPDATE where IDs are stable, allowing concurrent FK KEY SHARE checks while still serializing writers. Repeat burst runs are included before publication; a single successful run is not a sustained-load result.
 
+The first Linux CI run passed container deployment but exceeded the burst test's ten-second completion bound. Control writers now wake on either queue becoming ready instead of waiting up to 50 ms on an empty data queue. Status polling in the functional test is bounded to avoid an accidental 480-request-per-second status load on the shared runner. The completion bound remains unchanged; sustained-load experiments are still separate.
+
 ## Remaining validation
 
 Substitute-command deployment tests do not prove a real distro package installation or backup restoration. The local simulated model is not an Ollama compatibility result. Synthetic clock offsets do not prove robustness against arbitrary clock jumps or authenticated-but-malicious Nodes. Proxy restarts, household NAT/Wi-Fi, packet loss, prolonged disconnects, disk exhaustion and power-loss recovery still require dedicated fault-injection and target-environment trials.

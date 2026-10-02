@@ -43,7 +43,8 @@ def live_server(app):
 
 
 @pytest.mark.integration
-def test_real_websocket_node_burst_events_and_local_stream(registry_client, tmp_path):
+def test_real_websocket_node_burst_events_and_local_stream(registry_client, tmp_path, caplog):
+    caplog.set_level("INFO", logger="agenticiot")
     client, _, _ = registry_client
     node_record = provisioned(client)
     service(client, node_record)
@@ -126,7 +127,9 @@ def test_real_websocket_node_burst_events_and_local_stream(registry_client, tmp_
                             for index, device in enumerate(devices)
                         )
                     )
-                    assert all(c.status_code == 202 for c in commands)
+                    assert all(c.status_code == 202 for c in commands), [
+                        c.status_code for c in commands
+                    ]
                     async with asyncio.timeout(10):
                         while True:
                             states = await asyncio.gather(
@@ -136,7 +139,9 @@ def test_real_websocket_node_burst_events_and_local_stream(registry_client, tmp_
                                 break
                             if runner.done():
                                 runner.result()
-                            await asyncio.sleep(0.05)
+                            # Do not turn the functional burst check into an uncontrolled
+                            # 480 requests/second command-status load test on shared CI hosts.
+                            await asyncio.sleep(0.25)
                     assert time.monotonic() - started < 10  # regression bound, not network SLA
                     events = (await http.get("/v1/events/page")).json()
                     assert len(events["items"]) == 24

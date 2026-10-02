@@ -252,6 +252,7 @@ def test_control_messages_do_not_share_inference_queue():
         for _ in range(32):
             await connection.send({"type": "inference"}, data=True)
         await connection.send({"type": "command"})
+        assert connection.ready.is_set()
         assert connection.control.get_nowait()["type"] == "command"
 
     asyncio.run(check())
