@@ -6,32 +6,61 @@ umask 077
 REPOSITORY=https://github.com/CNTWDev/AgenticIOT.git
 DEPLOY_ROOT=${AGENTICIOT_DEPLOY_DIR:-/opt/agenticiot}
 ACTION=${1:-help}
+INSTALL_DOCKER=0
+TARGET=''
+STEP_NUMBER=0
+STEP_TOTAL=9
+CURRENT_STEP='参数检查'
+STARTED_AT=$SECONDS
 
-die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
+step() { STEP_NUMBER=$((STEP_NUMBER + 1)); CURRENT_STEP=$*; log "[$STEP_NUMBER/$STEP_TOTAL] $CURRENT_STEP"; }
+die() { printf 'ERROR [%s]: %s\n' "$CURRENT_STEP" "$*" >&2; exit 1; }
 usage() {
   printf '%s\n' \
-    'Usage: bash scripts/deploy.sh install|upgrade|start|stop|restart|status|logs|backup|rollback SHA' \
+    'Usage: bash scripts/deploy.sh check|install|upgrade|start|stop|restart|status|logs|backup|rollback SHA' \
+    'Optional: install --install-docker (explicitly install missing Docker components on supported apt/systemd hosts).' \
     'Requires Linux, Git, OpenSSL, flock and Docker Engine with Compose v2 (--wait support).' \
     'Default directory: /opt/agenticiot; override with AGENTICIOT_DEPLOY_DIR.' \
-    'One installation per host. Services bind only to 127.0.0.1. No automatic Docker installation.'
+    'One installation per host. Services bind only to 127.0.0.1. No package changes without --install-docker.'
 }
 case "$ACTION" in
   help|-h|--help) usage; exit 0 ;;
-  install|upgrade|start|stop|restart|status|logs|backup|rollback) ;;
+  check|install|upgrade|start|stop|restart|status|logs|backup|rollback) ;;
   *) usage; die 'Unknown operation' ;;
 esac
+shift
+if [[ "$ACTION" == rollback ]]; then TARGET=${1:-}; [[ $# == 0 ]] || shift; fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install-docker) [[ "$ACTION" == install ]] || die '--install-docker 只允许用于 install。'; INSTALL_DOCKER=1 ;;
+    *) die "未知参数：$1" ;;
+  esac
+  shift
+done
+case "$ACTION" in
+  check) STEP_TOTAL=1 ;;
+  rollback) STEP_TOTAL=6 ;;
+  start|restart) STEP_TOTAL=4 ;;
+  stop|status|logs|backup) STEP_TOTAL=3 ;;
+esac
+step '检测操作系统、基础工具和 Docker 环境'
+trap 'printf "ERROR [%s]: 环境准备失败，请检查上方错误；不会继续部署。\n" "$CURRENT_STEP" >&2' ERR
 [[ $(uname -s) == Linux ]] || die 'Run deployment on a Linux server.'
 [[ "$DEPLOY_ROOT" == /* && "$DEPLOY_ROOT" != *'/../'* && "$DEPLOY_ROOT" != *'/./'* ]] || die 'Use an absolute dedicated directory.'
 case "${DEPLOY_ROOT%/}" in
   ''|/|/opt|/usr|/var|/srv|/tmp|/root|/home|"${HOME:-/root}") die 'Refusing a broad installation directory.' ;;
 esac
 [[ "$DEPLOY_ROOT" != */ && "$DEPLOY_ROOT" != */.. && "$DEPLOY_ROOT" != */. ]] || die 'Use a normalized path without trailing slash.'
-for program in git openssl flock docker tar realpath; do
+for program in git openssl flock tar realpath; do
   command -v "$program" >/dev/null || die "Install prerequisite: $program (see docs/deployment/linux.md)."
 done
-docker info >/dev/null 2>&1 || die 'Docker daemon unavailable or current user lacks access.'
-docker compose version >/dev/null || die 'Docker Compose v2 required.'
-docker compose up --help | grep -- '--wait-timeout' >/dev/null || die 'Update Docker Compose: --wait-timeout required.'
+SCRIPT_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib/deploy-environment.sh
+source "$SCRIPT_DIRECTORY/lib/deploy-environment.sh"
+ensure_docker
+if [[ "$ACTION" == check ]]; then log '环境检查通过，未创建部署目录、未安装软件。'; exit 0; fi
+step '检查部署目录并获取操作锁'
 [[ ! -L "$DEPLOY_ROOT" ]] || die 'Installation root must not be a symlink.'
 if [[ ! -d "$DEPLOY_ROOT" ]]; then
   [[ "$ACTION" == install ]] || die 'Not installed.'
@@ -71,6 +100,7 @@ safe_state() {
 backup() {
   local destination
   destination=$(mktemp -d "$DEPLOY_ROOT/backups/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
+  log '备份数据库及配置，并检查归档目录；大数据库需要更长时间。'
   cp "$CONFIG" "$destination/config.env"
   printf '%s\n' "$RELEASE_SHA" > "$destination/release"
   compose exec -T postgres pg_dump -U agenticiot -d agenticiot -Fc > "$destination/database.dump.partial"
@@ -80,7 +110,9 @@ backup() {
   printf 'Backup (contains secrets): %s\n' "$destination"
 }
 start_apps() {
+  log '启动 API，等待就绪检查（最多 120 秒）。'
   compose up -d --no-deps --no-build --pull never --wait --wait-timeout 120 api
+  log '启动管理后台，等待健康检查（最多 120 秒）。'
   compose up -d --no-deps --no-build --pull never --wait --wait-timeout 120 admin
 }
 finish_release() {
@@ -88,10 +120,12 @@ finish_release() {
   mv "$DEPLOY_ROOT/current.new" "$DEPLOY_ROOT/current"
   mv "$DEPLOY_ROOT/pending" "$DEPLOY_ROOT/last-success"
   printf 'Ready: %s\nAdmin: http://127.0.0.1:5173  API: http://127.0.0.1:8000\n' "$RELEASE_SHA"
+  log "操作成功，总耗时 $((SECONDS - STARTED_AT)) 秒；配置位于 ${CONFIG}（不要公开）。"
 }
 failure() {
   local status=${1:-$?}
   trap - ERR
+  printf 'ERROR [%s]: 操作失败，已耗时 %s 秒。\n' "$CURRENT_STEP" "$((SECONDS - STARTED_AT))" >&2
   if [[ -f "$DEPLOY_ROOT/pending" ]]; then
     compose stop -t 25 admin api || true
     printf 'Deployment interrupted; apps stopped. Data/configuration retained. See docs/deployment/linux.md recovery.\n' >&2
@@ -113,6 +147,7 @@ case "$ACTION" in
     else
       current
     fi
+    step '从 GitHub 拉取 main 并确定部署版本'
     if [[ ! -d "$DEPLOY_ROOT/repo.git" ]]; then
       git init --bare "$DEPLOY_ROOT/repo.git"
       git --git-dir="$DEPLOY_ROOT/repo.git" remote add origin "$REPOSITORY"
@@ -130,6 +165,7 @@ case "$ACTION" in
       mv "$stage" "$DEPLOY_ROOT/releases/$candidate"
     fi
     select_release "$candidate"
+    step '生成或保留配置，验证 Compose 配置'
     if [[ ! -f "$CONFIG" ]]; then
       [[ "$ACTION" == install ]] || die 'Missing configuration; never regenerate secrets on upgrade.'
       password=$(openssl rand -hex 32)
@@ -143,7 +179,10 @@ case "$ACTION" in
     chmod 600 "$CONFIG"
     compose config --quiet
     # Build before interrupting the running release; retain versioned images for rollback.
+    step '构建 API 和后台镜像，现有服务继续运行'
+    log '以下为 Docker 构建输出；首次下载和构建可能较慢，不显示虚假的时间百分比。'
     compose build api admin
+    step '进入维护窗口并保护现有数据'
     if [[ "$ACTION" == upgrade ]]; then
       current
       printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
@@ -151,22 +190,28 @@ case "$ACTION" in
       backup
       select_release "$candidate"
     else
+      log '首次安装，无已有业务数据库需要升级前备份。'
       printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
     fi
     # Never recreate PostgreSQL as part of an application upgrade.
+    step '启动数据库并执行迁移'
     compose up -d --no-recreate --wait --wait-timeout 120 postgres
     compose run --rm --no-deps migrate
     if [[ "$ACTION" == install ]]; then
+      log '显式初始化试点管理授权，不输出管理令牌。'
       compose run --rm --no-deps api python -m agenticiot.access.service
     fi
+    step '启动 API 和管理后台并验证健康状态'
     start_apps
+    step '记录成功版本并完成部署'
     finish_release
     ;;
   rollback)
     safe_state
     current
     old=$RELEASE_SHA
-    target=${2:-}
+    step '验证目标版本、迁移一致性和保留镜像'
+    target=$TARGET
     select_release "$target"
     old_schema=$(git --git-dir="$DEPLOY_ROOT/repo.git" rev-parse "$old:backend/migrations")
     target_schema=$(git --git-dir="$DEPLOY_ROOT/repo.git" rev-parse "$target:backend/migrations")
@@ -174,22 +219,27 @@ case "$ACTION" in
     compose config --quiet
     docker image inspect "agenticiot-api:$target" "agenticiot-admin:$target" >/dev/null
     select_release "$old"
+    step '停止应用并备份当前数据'
     printf '%s\n' "$target" > "$DEPLOY_ROOT/pending"
     compose stop -t 25 admin api
     backup
     select_release "$target"
+    step '启动回退版本并检查健康状态'
     start_apps
+    step '记录回退结果'
     finish_release
     ;;
-  backup) current; backup ;;
+  backup) step '创建备份'; current; backup ;;
   start|restart)
     safe_state
     current
+    step '启动服务并检查健康状态'
     if [[ "$ACTION" == restart ]]; then compose stop -t 25 admin api; fi
     compose up -d --no-recreate --wait --wait-timeout 120 postgres
     start_apps
+    step '服务已就绪'
     ;;
-  stop) current; compose stop -t 25 admin api postgres ;;
-  status) current; compose ps ;;
-  logs) current; compose logs --tail 100 api admin postgres ;;
+  stop) step '停止服务，保留所有数据'; current; compose stop -t 25 admin api postgres ;;
+  status) step '显示服务状态'; current; compose ps ;;
+  logs) step '显示最近 100 行服务日志'; current; compose logs --tail 100 api admin postgres ;;
 esac

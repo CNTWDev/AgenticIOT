@@ -18,6 +18,7 @@ migrate:
 
 check:
 	bash -n scripts/deploy.sh
+	bash -n scripts/lib/deploy-environment.sh
 	uv run ruff check .
 	uv run ruff format --check .
 	uv run pytest -m 'not integration'

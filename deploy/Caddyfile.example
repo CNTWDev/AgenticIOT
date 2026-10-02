@@ -1,0 +1,18 @@
+# Host-installed Caddy. Replace the example domain before enabling this site.
+iot.example.com {
+	@backend path /v1/* /health/* /docs /docs/* /openapi.json
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
+	}
+	# Browser admin uses /api; strip this prefix exactly once.
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:8000 {
+			flush_interval -1
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:5173
+	}
+}

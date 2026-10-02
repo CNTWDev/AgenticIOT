@@ -14,6 +14,8 @@ jobs:
       AGENTICIOT_INFERENCE_HMAC_KEY: ci_disposable_hmac_key_at_least_32_characters
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Caddy example without requesting certificates
+        run: docker run --rm -v "$PWD/deploy/Caddyfile.example:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate > /dev/null
       - run: docker compose -f deploy/compose.linux.yaml config --quiet
       - run: docker compose -f deploy/compose.linux.yaml build api admin
       - run: docker compose -f deploy/compose.linux.yaml up -d --wait --wait-timeout 120 postgres

@@ -4,12 +4,15 @@
 
 ## 首次安装
 
-需要 Linux、Git、OpenSSL、util-linux（提供 flock）、GNU coreutils，以及已启动的 Docker Engine / Compose v2（支持 `--wait-timeout`）。建议使用 Ubuntu 24.04 LTS。Docker 请按[官方安装文档](https://docs.docker.com/engine/install/ubuntu/)安装；脚本不接管系统包源，不执行远程安装脚本。构建需要访问 GitHub、容器镜像仓库、Python 和 npm 包仓库。
+需要 Linux、Git、OpenSSL、util-linux（提供 flock）、GNU coreutils、tar，以及 Docker Engine / Compose v2（支持 `--wait-timeout`）和 Buildx。建议使用 Ubuntu 24.04 LTS。`check` 只检测环境；`install --install-docker` 显式允许在 Ubuntu 22.04/24.04、Debian 12/13 的 amd64/arm64 systemd 主机上配置或复用 Docker 官方 apt 源并安装缺失组件。不会自动卸载冲突包、升级已有 Engine 或因权限问题重装。其他环境按[官方文档](https://docs.docker.com/engine/install/)手动安装。构建需要访问 GitHub、容器镜像仓库、Python 和 npm 包仓库。
 
 ```sh
 git clone https://github.com/CNTWDev/AgenticIOT.git
 cd AgenticIOT
+bash scripts/deploy.sh check
 sudo bash scripts/deploy.sh install
+# 缺少 Docker 且同意安装系统组件时，改用：
+# sudo bash scripts/deploy.sh install --install-docker
 ```
 
 安装默认使用 `/opt/agenticiot`，从指定仓库的 `main` 拉取代码，按提交 SHA 构建镜像、执行数据库迁移、显式初始化一个管理授权，然后等待健康检查。每台服务器只支持一个名为 `agenticiot` 的 Compose 项目；已有同名容器或数据卷时拒绝首次安装，避免误接管开发环境。Docker 权限相当于主机管理员权限。
@@ -24,7 +27,7 @@ ssh -L 5173:127.0.0.1:5173 -L 8000:127.0.0.1:8000 your-user@your-server
 
 浏览器打开 `http://127.0.0.1:5173`。在服务器上由管理员安全读取 `/opt/agenticiot/config.env` 中 `AGENTICIOT_API_CLIENTS` 的 token，填入管理后台。它是试点用静态入口凭证，不是用户注册体系，也不是 Node 凭证。不要把配置、令牌或备份发送到聊天、工单和 Git。
 
-公网接入必须另配 HTTPS/WSS 反向代理和可信入口签名验证。API 上游为 `127.0.0.1:8000`，Node 路径为 `/v1/nodes/channel`；代理须支持 WebSocket 升级、关闭流式响应缓冲并设置合理的长连接超时。不得用明文公网 HTTP 承载这些凭证。参考 [Node 接入说明](../api/node-local-services.md)。
+安装和升级均按九个阶段输出时间、步骤编号和原生命令进度，失败时指出所处阶段。公网配置与 WSS 检查请参照 [README 的完整教程](../../README.md#公网-https-和-wss)及 [Caddyfile 示例](../../deploy/Caddyfile.example)。API 上游为 `127.0.0.1:8000`，Node 路径为 `/v1/nodes/channel`；不得用明文公网 HTTP 承载凭证。TLS 不取代可信入口签名验证和授权，另见 [Node 接入说明](../api/node-local-services.md)。
 
 ## 升级和运维
 
