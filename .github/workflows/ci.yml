@@ -1,0 +1,70 @@
+name: Foundation checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  deployment-smoke:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_DIR: ${{ github.workspace }}
+      POSTGRES_PASSWORD: ci_disposable_database_only
+      AGENTICIOT_INFERENCE_HMAC_KEY: ci_disposable_hmac_key_at_least_32_characters
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f deploy/compose.linux.yaml config --quiet
+      - run: docker compose -f deploy/compose.linux.yaml build api admin
+      - run: docker compose -f deploy/compose.linux.yaml up -d --wait --wait-timeout 120 postgres
+      - run: docker compose -f deploy/compose.linux.yaml run --rm --no-deps migrate
+      - run: docker compose -f deploy/compose.linux.yaml run --rm --no-deps api python -m agenticiot.access.service
+      - run: docker compose -f deploy/compose.linux.yaml up -d --no-deps --no-build --wait --wait-timeout 120 api admin
+      - run: curl --fail http://127.0.0.1:8000/health/ready && curl --fail http://127.0.0.1:5173/ > /dev/null
+      - if: always()
+        run: docker compose -f deploy/compose.linux.yaml logs --tail 100
+      - if: always()
+        run: docker compose -f deploy/compose.linux.yaml down
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: agenticiot
+          POSTGRES_PASSWORD: ci_test_only
+          POSTGRES_DB: agenticiot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U agenticiot -d agenticiot_test"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      AGENTICIOT_DATABASE_URL: postgresql+psycopg://agenticiot:ci_test_only@127.0.0.1:5432/agenticiot_test
+      AGENTICIOT_TEST_DATABASE_URL: postgresql+psycopg://agenticiot:ci_test_only@127.0.0.1:5432/agenticiot_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.3'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: uv sync --frozen
+      - run: npm ci
+      - run: make check
+      - run: uv run pytest -m integration
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/admin
+      - run: npm run test:e2e
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - if: github.event_name == 'pull_request'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: uv run python scripts/check_architecture.py --base "$PR_BASE"

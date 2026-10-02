@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+.venv
+**/node_modules
+**/dist
+**/__pycache__
+.pytest_cache
+.ruff_cache
+**/test-results
+**/playwright-report
+.local
+.claude
+.deploy
+**/*.dump
+**/*.pem
+**/*.key

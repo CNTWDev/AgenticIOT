@@ -1,0 +1,15 @@
+{
+  "name": "agenticiot",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["apps/admin"],
+  "engines": { "node": ">=22.13 <23" },
+  "scripts": {
+    "dev": "npm run dev --workspace @agenticiot/admin",
+    "build": "npm run build --workspace @agenticiot/admin",
+    "lint": "npm run lint --workspace @agenticiot/admin",
+    "format": "npm run format --workspace @agenticiot/admin",
+    "format:check": "npm run format:check --workspace @agenticiot/admin",
+    "test:e2e": "npm run test:e2e --workspace @agenticiot/admin"
+  }
+}

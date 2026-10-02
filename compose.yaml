@@ -1,0 +1,54 @@
+name: agenticiot
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agenticiot}
+      POSTGRES_USER: ${POSTGRES_USER:-agenticiot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agenticiot_local}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      AGENTICIOT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-agenticiot}:${POSTGRES_PASSWORD:-agenticiot_local}@postgres:5432/${POSTGRES_DB:-agenticiot}
+    depends_on:
+      postgres:
+        condition: service_healthy
+  api:
+    build: .
+    environment:
+      AGENTICIOT_API_CLIENTS: ${AGENTICIOT_API_CLIENTS:-[]}
+      AGENTICIOT_TRUSTED_ISSUERS: ${AGENTICIOT_TRUSTED_ISSUERS:-[]}
+      AGENTICIOT_INFERENCE_HMAC_KEY: ${AGENTICIOT_INFERENCE_HMAC_KEY:-}
+      AGENTICIOT_INFERENCE_HMAC_PREVIOUS_KEYS: ${AGENTICIOT_INFERENCE_HMAC_PREVIOUS_KEYS:-[]}
+      AGENTICIOT_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-agenticiot}:${POSTGRES_PASSWORD:-agenticiot_local}@postgres:5432/${POSTGRES_DB:-agenticiot}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 10
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  postgres_data:

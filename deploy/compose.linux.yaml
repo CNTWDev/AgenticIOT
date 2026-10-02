@@ -1,0 +1,71 @@
+name: agenticiot
+
+x-api: &api
+  image: agenticiot-api:${RELEASE_SHA:?Release required}
+  build:
+    context: ${RELEASE_DIR:?Release directory required}
+  environment:
+    AGENTICIOT_DATABASE_URL: postgresql+psycopg://agenticiot:${POSTGRES_PASSWORD:?Password required}@postgres:5432/agenticiot
+    AGENTICIOT_API_CLIENTS: ${AGENTICIOT_API_CLIENTS:-[]}
+    AGENTICIOT_TRUSTED_ISSUERS: ${AGENTICIOT_TRUSTED_ISSUERS:-[]}
+    AGENTICIOT_INFERENCE_HMAC_KEY: ${AGENTICIOT_INFERENCE_HMAC_KEY:?HMAC key required}
+    AGENTICIOT_INFERENCE_HMAC_PREVIOUS_KEYS: ${AGENTICIOT_INFERENCE_HMAC_PREVIOUS_KEYS:-[]}
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agenticiot
+      POSTGRES_USER: agenticiot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Password required}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U agenticiot -d agenticiot']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  migrate:
+    <<: *api
+    command: [alembic, upgrade, head]
+    restart: 'no'
+  api:
+    <<: *api
+    restart: unless-stopped
+    ports: ['127.0.0.1:8000:8000']
+    stop_grace_period: 25s
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 20
+  admin:
+    image: agenticiot-admin:${RELEASE_SHA:?Release required}
+    build:
+      context: ${RELEASE_DIR:?Release directory required}
+      dockerfile: apps/admin/Dockerfile
+    restart: unless-stopped
+    ports: ['127.0.0.1:5173:80']
+    healthcheck:
+      test: [CMD, wget, -q, --spider, 'http://127.0.0.1/']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+volumes:
+  postgres_data:
