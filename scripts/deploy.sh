@@ -12,6 +12,7 @@ STEP_NUMBER=0
 STEP_TOTAL=9
 CURRENT_STEP='Validate arguments'
 STARTED_AT=$SECONDS
+RESTORE_APPS=0
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 step() { STEP_NUMBER=$((STEP_NUMBER + 1)); CURRENT_STEP=$*; log "[$STEP_NUMBER/$STEP_TOTAL] $CURRENT_STEP"; }
@@ -129,12 +130,17 @@ failure() {
   if [[ -f "$DEPLOY_ROOT/pending" ]]; then
     compose stop -t 25 admin api || true
     printf 'Deployment interrupted; apps stopped. Data/configuration retained. See docs/deployment/linux.md recovery.\n' >&2
+  elif [[ "$RESTORE_APPS" == 1 ]]; then
+    log 'Migration has not started; restore the previously running release.'
+    current
+    start_apps || printf 'Automatic application restart failed; use start after inspecting the error.\n' >&2
   fi
   exit "$status"
 }
 trap failure ERR
 trap 'failure 130' INT
 trap 'failure 143' TERM
+trap 'failure 129' HUP
 
 case "$ACTION" in
   install|upgrade)
@@ -181,21 +187,25 @@ case "$ACTION" in
     # Build before interrupting the running release; retain versioned images for rollback.
     step 'Build API and Admin images while the existing release stays online'
     log 'Docker build output follows. Initial downloads and builds may take longer; no estimated percentage is shown.'
-    compose build api admin
+    compose build --pull api admin
+    log 'Validate identity and secret configuration before interrupting applications.'
+    compose run --rm --no-deps api python -m agenticiot.deploy_check
     step 'Enter the maintenance window and protect existing data'
     if [[ "$ACTION" == upgrade ]]; then
       current
-      printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
+      # A stopped installation still needs a running database for pg_dump.
+      compose up -d --no-recreate --wait --wait-timeout 120 postgres
+      if compose ps --status running --services | grep -qx api; then RESTORE_APPS=1; fi
       compose stop -t 25 admin api
       backup
       select_release "$candidate"
     else
       log 'Initial installation: no existing application database requires a pre-upgrade backup.'
-      printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
     fi
     # Never recreate PostgreSQL as part of an application upgrade.
     step 'Start PostgreSQL and apply migrations'
     compose up -d --no-recreate --wait --wait-timeout 120 postgres
+    printf '%s\n' "$candidate" > "$DEPLOY_ROOT/pending"
     compose run --rm --no-deps migrate
     if [[ "$ACTION" == install ]]; then
       log 'Explicitly bootstrap pilot administration grants without printing the administration token.'
@@ -220,9 +230,11 @@ case "$ACTION" in
     docker image inspect "agenticiot-api:$target" "agenticiot-admin:$target" >/dev/null
     select_release "$old"
     step 'Stop the applications and back up current data'
-    printf '%s\n' "$target" > "$DEPLOY_ROOT/pending"
+    compose up -d --no-recreate --wait --wait-timeout 120 postgres
+    if compose ps --status running --services | grep -qx api; then RESTORE_APPS=1; fi
     compose stop -t 25 admin api
     backup
+    printf '%s\n' "$target" > "$DEPLOY_ROOT/pending"
     select_release "$target"
     step 'Start the rollback release and verify health'
     start_apps

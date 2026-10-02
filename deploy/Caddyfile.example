@@ -1,5 +1,17 @@
 # Host-installed Caddy. Replace the example domain before enabling this site.
+{
+	servers {
+		timeouts {
+			read_header 5s
+			read_body 10s
+			idle 2m
+		}
+	}
+}
+
 iot.example.com {
+	header X-Content-Type-Options nosniff
+	header Referrer-Policy no-referrer
 	@backend path /v1/* /health/* /docs /docs/* /openapi.json
 	handle @backend {
 		reverse_proxy 127.0.0.1:8000 {

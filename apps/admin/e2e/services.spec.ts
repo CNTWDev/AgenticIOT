@@ -23,6 +23,16 @@ test("account-scoped Node and service activation stay distinct from connectivity
   await expect(page.getByLabel("节点凭证", { exact: true })).not.toHaveValue(
     "",
   );
+  const provisionedNode = page
+    .locator("article")
+    .filter({ hasText: `节点 ${suffix}` });
+  await expect(
+    provisionedNode.getByRole("button", { name: "轮换凭证" }),
+  ).toBeDisabled();
+  const nodeId = await provisionedNode.locator("code").textContent();
+  await expect(
+    page.getByRole("region", { name: "一次性节点凭证" }),
+  ).toContainText(nodeId!);
   await page.getByRole("button", { name: "已保存，清除显示" }).click();
   const node = page.locator("article").filter({ hasText: `节点 ${suffix}` });
   await expect(node).toContainText("已启用 · 未连接");

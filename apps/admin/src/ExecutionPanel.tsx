@@ -5,7 +5,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { registryRequest, type Page } from "./registry-api";
+import { registryRequest, RegistryError, type Page } from "./registry-api";
 
 type Binding = {
   id: string;
@@ -27,7 +27,10 @@ type Observation = {
   freshness: string;
   source_version: string;
 };
-type State = { properties: Record<string, Observation> };
+type State = {
+  properties: Record<string, Observation>;
+  observation_id?: string;
+};
 type Receipt = {
   sequence: number;
   stage: string;
@@ -41,6 +44,8 @@ type Command = {
   status: string;
   trace_id: string;
   receipts: Receipt[];
+  blocked?: boolean;
+  barrier_at?: string;
 };
 type Snapshot = {
   binding: Binding | null;
@@ -75,11 +80,13 @@ export default function ExecutionPanel({
   token,
   thingId,
   operator,
+  actuator,
   onRefreshDevice,
 }: {
   token: string;
   thingId: string;
   operator: boolean;
+  actuator: boolean;
   onRefreshDevice: () => Promise<void>;
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -158,13 +165,17 @@ export default function ExecutionPanel({
     setError("");
     setNotice("");
     setBusy(true);
-    const intent = pending ?? {
-      key: crypto.randomUUID(),
-      action,
-      input: { value: action === "set_power" ? power === "true" : brightness },
-    };
-    setPending(intent);
     try {
+      if (!crypto.randomUUID)
+        throw new Error("Use HTTPS or localhost to issue commands securely.");
+      const intent = pending ?? {
+        key: crypto.randomUUID(),
+        action,
+        input: {
+          value: action === "set_power" ? power === "true" : brightness,
+        },
+      };
+      setPending(intent);
       const result = await registryRequest<Command>(
         token,
         `/things/${thingId}/actions/${intent.action}`,
@@ -180,6 +191,13 @@ export default function ExecutionPanel({
       );
       await reload();
     } catch (failure) {
+      if (
+        failure instanceof RegistryError &&
+        failure.status >= 400 &&
+        failure.status < 500 &&
+        failure.status !== 408
+      )
+        setPending(undefined);
       setError((failure as Error).message);
     } finally {
       setBusy(false);
@@ -313,7 +331,7 @@ export default function ExecutionPanel({
               )}
             </div>
           )}
-          {operator && snapshot.binding && (
+          {actuator && snapshot.binding && (
             <form
               className="registry-form command-form"
               onSubmit={(event) => void submit(event)}
@@ -393,6 +411,47 @@ export default function ExecutionPanel({
                 {statusLabels[command.status] ?? command.status}
               </summary>
               <code>{command.id}</code>
+              {command.blocked && (
+                <p>
+                  Dispatch paused until execution uncertainty is reconciled.
+                </p>
+              )}
+              {operator &&
+                command.blocked &&
+                command.barrier_at &&
+                snapshot.state.observation_id && (
+                  <button
+                    disabled={busy}
+                    onClick={async () => {
+                      const reason = window.prompt(
+                        "Inspect the current device state, then explain why later commands may proceed (at least 10 characters). This does not mark the previous command successful.",
+                      );
+                      if (!reason || reason.trim().length < 10) return;
+                      setBusy(true);
+                      setError("");
+                      try {
+                        await registryRequest(
+                          token,
+                          `/commands/${command.id}/reconcile`,
+                          {
+                            method: "POST",
+                            body: JSON.stringify({
+                              observation_id: snapshot.state.observation_id,
+                              reason: reason.trim(),
+                            }),
+                          },
+                        );
+                        await reload();
+                      } catch (failure) {
+                        setError((failure as Error).message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Reconcile and release dispatch
+                  </button>
+                )}
               <ol>
                 {command.receipts.map((receipt) => (
                   <li key={receipt.sequence}>

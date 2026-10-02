@@ -1,4 +1,4 @@
-name: agenticiot
+name: agenticiot-dev
 services:
   postgres:
     image: postgres:18-alpine

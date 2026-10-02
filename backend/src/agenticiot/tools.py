@@ -72,6 +72,8 @@ def schema(thing_id: str, request: Request, principal: Authenticated, session: D
 def invoke(data: ToolAction, request: Request, principal: Authenticated, session: Database):
     principal.require("device:act")
     service = RuntimeService(session, principal, request.state.trace_id)
-    return service.invoke(
+    command = service.invoke(
         data.thing_id, data.action, InvokeRequest(input=data.input), data.operation_id
     )
+    request.app.state.node_hub.notify(service.binding(command.thing_id).edge_id)
+    return command

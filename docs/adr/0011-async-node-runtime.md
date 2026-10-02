@@ -1,5 +1,7 @@
 # ADR 0011 异步通道与单实例运行
 
+Runtime amendment: [ADR 0012](0012-pilot-recovery-and-transport-bounds.md) supersedes the 100 ms scan, global connection limit, permanent rejection handling and lack of reconciliation below. This file preserves the original pilot decision.
+
 日期：2026-10-02。状态：Accepted for software pilot。补充 ADR 0003 与 ADR 0009；公网性能和生产容量仍待实测。
 
 ## 运行模型

@@ -293,9 +293,11 @@ def test_unknown_stays_terminal_late_facts_and_request_bounds(registry_client):
     service(client, node)
     principal = principal_from_token(client.app, TOKEN_A)
     body = ChatRequest(model="home-model", messages=[{"role": "user", "content": "test"}])
-    _, call_id = admit(client.app, principal, body, None)
+    client.app.state.node_hub.connections[node["id"]] = Connection(node["id"], 1)
+    _, call_id, _ = admit(client.app, principal, body, None)
+    client.app.state.node_hub.connections.clear()
     with Session(client.app.state.engine) as session, session.begin():
-        session.get(Invocation, call_id).deadline = datetime.now(UTC) - timedelta(seconds=1)
+        session.get(Invocation, call_id).deadline = datetime.now(UTC) - timedelta(seconds=6)
     expire_metadata(client.app)
     finish(client.app, call_id, "succeeded")
     late_fact(client.app, uuid4().hex, {"invocation_id": call_id})

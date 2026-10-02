@@ -1,5 +1,7 @@
 # Node 与本地服务运行指南
 
+Current runtime amendment: [pilot recovery guide](../operations/pilot-recovery.md) covers protocol v2, command reconciliation, usage configuration and exact SSE failure semantics. Upgrade to `0011_runtime_recovery`, preserving Node journals. API schemas are generated in `api/platform.openapi.json`.
+
 当前软件实现覆盖可信账号授权、内部域、节点凭证、WSS、模拟设备、请求内文本流和采样事件。平台不是云模型网关，也不创建用户账号。先完成下面的受控引导，再激活资源。
 
 ## 一 引导管理主体
@@ -79,7 +81,7 @@ Python 确定性适配器 `agenticiot.agent_client.DeviceTools` 接收入口持�
 
 ## 五 升级与验证边界
 
-迁移到 `0010_hmac_key_version`。已有资源的字符串域会回填为内部 ID，原资源身份和关系保留。先备份；`0005_access` 禁止自动有损降级，跨越它回退必须恢复已验证备份。
+Migrate to `0011_runtime_recovery`. Existing domain mappings and resource identities are retained. Back up before migration; recovery evidence is forward-only, so cross-schema rollback requires a verified backup restoration plan.
 
 旧 Edge 转 WSS 时，管理者用原 edge_ref 登记尚无机器凭证的节点，平台保留旧 Node ID 与绑定并签发新凭证。停止旧运行器，再以新凭证和原日志目录启动 Node；不要同时运行两个执行进程。对已托管节点重复登记返回冲突，不隐式轮换凭证。
 

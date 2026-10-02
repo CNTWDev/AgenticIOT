@@ -49,7 +49,7 @@ def test_real_websocket_node_burst_events_and_local_stream(registry_client, tmp_
     service(client, node_record)
     model = publish(client, **virtual_model())
     devices = []
-    for index in range(7):
+    for index in range(24):
         device = register(client, model, external_ref=f"lamp-{index}").json()
         result = client.put(
             f"/v1/management/devices/{device['id']}/binding", json={"edge_id": node_record["id"]}
@@ -139,7 +139,7 @@ def test_real_websocket_node_burst_events_and_local_stream(registry_client, tmp_
                             await asyncio.sleep(0.05)
                     assert time.monotonic() - started < 10  # regression bound, not network SLA
                     events = (await http.get("/v1/events/page")).json()
-                    assert len(events["items"]) == 7
+                    assert len(events["items"]) == 24
                     assert {e["source_kind"] for e in events["items"]} == {"sampled_change"}
                     replay = (
                         await http.get("/v1/events/page", params={"cursor": events["cursor"]})

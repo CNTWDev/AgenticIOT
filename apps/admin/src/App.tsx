@@ -100,7 +100,7 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <span className="phase-dot" />
-          本地开发环境
+          Pilot environment
           <br />
           <small>Device Registry · v0.1</small>
         </div>
@@ -116,7 +116,7 @@ export default function App() {
                 ? "设备管理"
                 : "运行概览"}
           </span>
-          <span className="environment">LOCAL</span>
+          <span className="environment">PILOT</span>
         </header>
         <main id="overview">
           {route === "services" ? (

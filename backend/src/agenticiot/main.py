@@ -99,6 +99,7 @@ def create_app(
                 engine.dispose()
 
     app = FastAPI(
+        redirect_slashes=False,
         title="AgenticIoT Platform — implemented endpoints",
         version=__version__,
         description=(
@@ -189,11 +190,15 @@ def create_app(
 
     @app.exception_handler(SQLAlchemyError)
     async def database_error(request: Request, _exc: SQLAlchemyError):
-        logger.warning("Registry database operation failed")
+        logger.warning(
+            "Registry database operation failed: %s sqlstate=%s",
+            type(_exc).__name__,
+            getattr(getattr(_exc, "orig", None), "sqlstate", None),
+        )
         return problem(request, 503, "Database is not ready", "database_not_ready")
 
     @app.get("/health/live", response_model=Health, tags=["Health"], operation_id="liveness")
-    def live() -> Health:
+    async def live() -> Health:
         return Health(status="ok", version=__version__)
 
     @app.get(

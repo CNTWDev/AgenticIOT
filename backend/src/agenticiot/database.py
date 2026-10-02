@@ -3,7 +3,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 from agenticiot.config import Settings
 
-FOUNDATION_REVISION = "0010_hmac_key_version"
+FOUNDATION_REVISION = "0011_runtime_recovery"
 
 
 class Base(DeclarativeBase):

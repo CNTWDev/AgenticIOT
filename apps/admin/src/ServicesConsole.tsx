@@ -2,7 +2,14 @@ import { useState, type FormEvent } from "react";
 import { registryRequest } from "./registry-api";
 
 type Domain = { id: string; title: string; permissions: string[] };
-type Node = { id: string; title: string; enabled: boolean; online: boolean };
+type Node = {
+  id: string;
+  title: string;
+  enabled: boolean;
+  online: boolean;
+  pending_uploads?: number | null;
+  quarantined_uploads?: number | null;
+};
 type Service = {
   id: string;
   name: string;
@@ -21,6 +28,7 @@ export default function ServicesConsole() {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [services, setServices] = useState<Service[]>([]);
   const [secret, setSecret] = useState("");
+  const [secretNode, setSecretNode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const manage = domain?.permissions.includes("domain:manage");
@@ -65,7 +73,7 @@ export default function ServicesConsole() {
     const form = event.currentTarget;
     const data = new FormData(form);
     void perform(async () => {
-      const result = await registryRequest<{ token: string }>(
+      const result = await registryRequest<{ token: string; id: string }>(
         credential,
         "/management/nodes",
         {
@@ -77,6 +85,7 @@ export default function ServicesConsole() {
         },
       );
       setSecret(result.token);
+      setSecretNode(result.id);
       form.reset();
       await load(credential);
     });
@@ -170,6 +179,9 @@ export default function ServicesConsole() {
             <section className="service-card" aria-label="一次性节点凭证">
               <h2>节点凭证只展示一次</h2>
               <p>
+                Node: <code>{secretNode}</code>
+              </p>
+              <p>
                 通过可信渠道配置到 Node 的
                 AGENTICIOT_NODE_TOKEN。不要分享或提交到代码库。
               </p>
@@ -188,6 +200,10 @@ export default function ServicesConsole() {
                   {node.enabled ? "已启用" : "已停用"} ·{" "}
                   {node.online ? "已连接" : "未连接"}
                 </p>
+                <p>
+                  Pending uploads: {node.pending_uploads ?? "unknown"} ·
+                  Quarantined evidence: {node.quarantined_uploads ?? "unknown"}
+                </p>
                 {manage && (
                   <>
                     <button
@@ -202,7 +218,7 @@ export default function ServicesConsole() {
                       {node.enabled ? "停用节点" : "启用节点"}
                     </button>{" "}
                     <button
-                      disabled={busy}
+                      disabled={busy || !!secret}
                       onClick={() => {
                         if (
                           !window.confirm(
@@ -219,6 +235,7 @@ export default function ServicesConsole() {
                             { method: "POST" },
                           );
                           setSecret(result.token);
+                          setSecretNode(node.id);
                           await load(credential);
                         });
                       }}

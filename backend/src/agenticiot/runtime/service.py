@@ -60,7 +60,10 @@ class RuntimeService(RegistryService):
         resource = self.session.scalar(
             select(kind)
             .where(kind.id == resource_id, kind.domain_ref == self.domain)
-            .with_for_update()
+            # IDs never change. NO KEY UPDATE still serializes writers, while allowing
+            # observation/command FK checks to take KEY SHARE without a device/Node cycle.
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
         )
         if resource is None:
             raise APIError(404, "resource_not_found", "Resource not found")
@@ -148,7 +151,8 @@ class RuntimeService(RegistryService):
         if command.deadline <= now() and command.stage in ("accepted", "dispatched"):
             stage = "expired" if command.stage == "accepted" else "timed_out"
             self.receipt(command, stage, error="deadline_elapsed")
-            self.audit(f"command.{stage}", command.id)
+            command.blocked = stage == "timed_out"
+            self.audit(f"command.{stage}", command.id, actor="system:deadline")
 
     def command_view(self, command):
         status = {
@@ -176,6 +180,10 @@ class RuntimeService(RegistryService):
             deadline=command.deadline,
             trace_id=command.trace_id,
             receipts=[ReceiptView.model_validate(item) for item in receipts],
+            blocked=command.blocked,
+            received_at=command.received_at,
+            barrier_at=command.barrier_at,
+            resolution=command.resolution,
         )
 
     def invoke(self, thing_id, action, data, key):
@@ -184,6 +192,8 @@ class RuntimeService(RegistryService):
         # Preserve historical development keys; external entries are independently namespaced.
         if (self.principal.issuer, self.principal.client_id) != (LOCAL_ISSUER, LOCAL_CLIENT):
             key = fingerprint([self.principal.issuer, self.principal.client_id, key])
+        if self.principal.turn_ref:
+            key = fingerprint([self.principal.turn_ref, key])
         # Serializes same-device retries before checking the unique caller/key index.
         device = self.locked(Device, thing_id)
         try:
@@ -267,12 +277,49 @@ class RuntimeService(RegistryService):
             .where(Command.thing_id == thing_id, Command.domain_ref == self.domain)
             .order_by(Command.created_at.desc(), Command.id)
             .limit(20)
-            .with_for_update()
         ).all()
-        for command in commands:
+        # Acquire locks in the same order as dispatch, not presentation order.
+        for item in sorted(commands, key=lambda c: (c.created_at, c.id)):
+            command = self.locked(Command, item.id)
             self.settle(command)
         self.session.commit()
         return [self.command_view(command) for command in commands]
+
+    def reconcile(self, command_id, observation_id, reason):
+        command = self.locked(Command, command_id)
+        observation = self.session.get(Observation, observation_id)
+        state = self.session.get(StateProjection, command.thing_id, with_for_update=True)
+        reason = reason.strip()
+        if len(reason) < 10:
+            raise APIError(422, "invalid_request", "Explain the reconciliation decision")
+        if not command.blocked or command.barrier_at is None:
+            raise APIError(409, "reconciliation_not_ready", "A quiescent Node barrier is required")
+        if (
+            observation is None
+            or observation.domain_ref != self.domain
+            or observation.thing_id != command.thing_id
+            or state is None
+            or state.observation_id != observation.id
+            or observation.received_at <= command.barrier_at
+            or observation.observed_at <= command.barrier_at
+            or freshness(observation.observed_at) != "fresh"
+        ):
+            raise APIError(
+                409, "fresh_observation_required", "A new post-barrier observation is required"
+            )
+        command.resolution = {
+            "actor": self.principal.subject_ref,
+            "reason": reason,
+            "observation_id": observation_id,
+            "at": now().isoformat(),
+        }
+        command.blocked = False
+        self.receipt(
+            command, command.stage, evidence={"kind": "manual_reconciliation", **command.resolution}
+        )
+        self.audit("command.reconciled", command.id)
+        self.session.commit()
+        return self.command_view(command)
 
     def state(self, thing_id):
         self.get(Device, thing_id)
@@ -293,15 +340,21 @@ class RuntimeService(RegistryService):
                 for prop, value in state.values.items()
             }
         )
-        return {"thing_id": thing_id, "properties": properties, "simulated": True}
+        return {
+            "thing_id": thing_id,
+            "properties": properties,
+            "simulated": True,
+            "observation_id": state.observation_id if state else None,
+        }
 
 
 class EdgeService:
-    def __init__(self, session, principal, trace_id):
+    def __init__(self, session, principal, trace_id, *, clock_offset=None):
         self.session, self.principal, self.trace_id = session, principal, trace_id
         self.domain = principal.domain_ref
         self.storage = RuntimeService(session, principal, trace_id)
         self.edge_ref = principal.edge_ref
+        self.clock_offset = clock_offset
 
     def audit(self, *args, **kwargs):
         return self.storage.audit(*args, **kwargs)
@@ -413,7 +466,8 @@ class EdgeService:
             return old
         if data.source_sequence <= edge.last_sequence:
             raise APIError(409, "sequence_conflict", "Observation sequence must increase")
-        if data.observed_at > now() + timedelta(seconds=5):
+        observed_at = data.observed_at + timedelta(seconds=self.clock_offset or 0)
+        if observed_at > now() + timedelta(seconds=5):
             raise APIError(422, "invalid_observation_time", "Observation is in the future")
         observation = Observation(
             id=uuid4().hex,
@@ -423,7 +477,8 @@ class EdgeService:
             command_id=command_id,
             source_sequence=data.source_sequence,
             source_ref=edge.edge_ref,
-            observed_at=data.observed_at,
+            observed_at=observed_at,
+            source_observed_at=data.observed_at,
             values=data.values.model_dump(),
             request_hash=digest,
         )
@@ -463,15 +518,23 @@ class EdgeService:
             raise APIError(409, "invalid_command_stage", "Command was not dispatched")
         if data.outcome == "failed":
             self.receipt(command, "failed", executor=edge.edge_ref, error=data.error_code)
+            command.blocked = data.error_code == "execution_uncertain"
         else:
             dispatched_at = self.session.scalar(
                 select(Receipt.occurred_at).where(
                     Receipt.command_id == command.id, Receipt.stage == "dispatched"
                 )
             )
-            if data.observed_at < dispatched_at:
+            if self.clock_offset is None and data.observed_at < dispatched_at:
                 raise APIError(
                     422, "invalid_observation_time", "Completion evidence predates dispatch"
+                )
+            if (
+                command.dispatch_sequence is not None
+                and data.source_sequence <= command.dispatch_sequence
+            ):
+                raise APIError(
+                    409, "invalid_evidence_sequence", "Evidence predates command dispatch"
                 )
             observation = self.observe(edge, command.thing_id, data, command.id)
             matched = (
@@ -489,6 +552,7 @@ class EdgeService:
                 },
                 error=None if matched else "confirmation_mismatch",
             )
+            command.blocked = False
         command.result_hash = digest
         self.audit(f"command.{command.stage}", command.id)
         self.session.commit()

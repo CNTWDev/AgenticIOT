@@ -4,6 +4,8 @@ AgenticIoT is a device management and Node-local service access platform for AI 
 
 The platform handles resource authorization, device connectivity, and execution evidence. Application backends and Agent Runtimes own planning, memory, user relationships, and cloud-model policies. The design follows **Less is More**: a focused device platform, not another general-purpose AI gateway.
 
+The latest pilot hardening addresses Node reconnects, dispatch capacity, clock skew, command reconciliation, bounded admission, and pre-migration recovery. Read the [review outcomes and recovery guide](docs/operations/pilot-recovery.md) before upgrading. These fixes do not establish real-device safety or a production SLA.
+
 **Status: software pilot, not a production-ready release.** Implemented capabilities include simulated devices, a simulated-device MQTT integration, Nodes, local-service streaming, an administration console, and automated tests. Physical hardware, individual model compatibility, household-network latency, and production security still require validation. The licensing strategy is AGPLv3 plus a separate commercial license; see [Licensing and commercial use](#licensing-and-commercial-use) for the status of the formal licensing documents.
 
 ## Architecture
@@ -120,7 +122,7 @@ git pull --ff-only origin main
 sudo bash scripts/deploy.sh upgrade
 ```
 
-The script fetches the latest `main` from the same GitHub repository, builds images, stops the applications, creates a backup, applies migrations, and checks the new release. It updates `current` only after success. An unchanged commit is not redeployed.
+The script fetches the latest `main`, builds images with refreshed base images (`--pull`), and validates identity configuration before downtime. It ensures PostgreSQL is running, stops the applications, creates a backup, then records migration intent and applies migrations. It updates `current` only after health checks succeed. An unchanged commit is not redeployed.
 
 **Upgrades require a maintenance window.** Nodes reconnect, and in-flight inference may become `unknown`; this is not a zero-downtime rolling upgrade. Docker Engine and PostgreSQL major-version upgrades are separate operations.
 
@@ -136,7 +138,9 @@ The script fetches the latest `main` from the same GitHub repository, builds ima
 
 When using a custom directory, supply it for every operation, for example: `sudo env AGENTICIOT_DEPLOY_DIR=/srv/agenticiot bash scripts/deploy.sh install`. Run `restart` after application configuration changes. Database password rotation also requires updating the database role; editing the configuration alone is insufficient.
 
-A build failure leaves the old release running. A migration or health-check failure stops the applications and retains `pending`, blocking blind restarts and upgrades. Rollback never automatically downgrades the database. Crossing migration versions requires a validated backup-restoration plan. Do not run `docker compose down -v`. See the [Linux operations guide](docs/deployment/linux.md) for recovery procedures, backup protection, and validation boundaries.
+A build/configuration failure leaves the old release running. A backup failure does not create `pending`; the installer restarts the old applications only if they were running before maintenance. A migration or health-check failure stops the applications and retains `pending`, blocking blind restarts and upgrades. Rollback never automatically downgrades the database. Crossing migration versions requires a validated backup-restoration plan. Do not run `docker compose down -v`. See the [Linux operations guide](docs/deployment/linux.md) and [recovery addendum](docs/operations/pilot-recovery.md).
+
+Development Compose now uses `agenticiot-dev`; the installer continues to use `agenticiot`. Existing development volumes under the old project name are not automatically moved or deleted. Inspect and back them up before changing project names. PostgreSQL patch updates remain a separate maintenance operation; see the recovery guide.
 
 ## Public HTTPS and WSS
 
@@ -202,7 +206,7 @@ uv run python -m agenticiot.node \
   --data-dir .local/node-home
 ```
 
-For long-running deployments, use a permission-protected service configuration or a secrets manager. Never put tokens in URLs. Confirm that the Node appears online in the console to verify its authenticated connection; a successful HTTPS health check alone does not validate WSS. Do not disable TLS verification to bypass certificate errors.
+For long-running deployments, use a permission-protected service configuration or a secrets manager. A [systemd unit example](deploy/agenticiot-node.service.example) and [setup instructions](docs/operations/pilot-recovery.md#node-supervision) are provided. Never put tokens in URLs. Confirm that the Node appears online in the console to verify its authenticated connection; a successful HTTPS health check alone does not validate WSS. Do not disable TLS verification to bypass certificate errors.
 
 Troubleshoot in this order: DNS and security groups, Caddy certificate logs, `deploy.sh status`, API readiness, then Node credentials and endpoint paths. Public deployments should integrate a trusted application backend, restrict administration access, and assess the handling of relayed data against their compliance requirements.
 

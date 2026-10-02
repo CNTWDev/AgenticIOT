@@ -18,12 +18,12 @@ class RegistryService:
         self.domain = principal.domain_ref
         self.trace_id = trace_id
 
-    def audit(self, operation: str, resource_id: str):
+    def audit(self, operation: str, resource_id: str, *, actor: str | None = None):
         self.session.add(
             RegistryAudit(
                 id=uuid4().hex,
                 domain_ref=self.domain,
-                subject_ref=self.principal.subject_ref,
+                subject_ref=actor or self.principal.subject_ref,
                 operation=operation,
                 resource_id=resource_id,
                 trace_id=self.trace_id,

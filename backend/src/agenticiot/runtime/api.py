@@ -1,10 +1,11 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request, Response
+from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agenticiot.registry.schemas import Page
+from agenticiot.registry.schemas import Page, SchemaModel
 from agenticiot.runtime.models import EdgeNode
 from agenticiot.runtime.schemas import (
     BindingCreate,
@@ -102,12 +103,14 @@ def invoke(
     thing_id: str,
     action_name: str,
     data: InvokeRequest,
+    request: Request,
     response: Response,
     _operator: Actuator,
     service: Runtime,
     idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
 ):
     command = service.invoke(thing_id, action_name, data, idempotency_key)
+    request.app.state.node_hub.notify(service.binding(command.thing_id).edge_id)
     response.headers["Location"] = f"/v1/commands/{command.id}"
     return command
 
@@ -130,6 +133,29 @@ def list_commands(thing_id: str, service: Runtime):
 )
 def get_command(command_id: str, service: Runtime):
     return service.read_command(command_id)
+
+
+class ReconciliationInput(SchemaModel):
+    observation_id: str = Field(min_length=32, max_length=32)
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+@router.post(
+    "/commands/{command_id}/reconcile",
+    response_model=CommandView,
+    tags=["Commands"],
+    operation_id="reconcileCommand",
+)
+def reconcile(
+    command_id: str,
+    data: ReconciliationInput,
+    request: Request,
+    _operator: Operator,
+    service: Runtime,
+):
+    result = service.reconcile(command_id, data.observation_id, data.reason)
+    request.app.state.node_hub.notify(service.binding(result.thing_id).edge_id)
+    return result
 
 
 @router.get(

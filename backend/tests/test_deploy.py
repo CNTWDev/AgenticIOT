@@ -41,7 +41,11 @@ elif name == "docker":
     if "--help" in args:
         print("--wait-timeout")
     elif "pg_dump" in args:
+        if os.environ.get("DEPLOY_TEST_FAIL") == "backup":
+            sys.exit(42)
         print("fake archive")
+    elif "ps" in args and "--services" in args and os.environ.get("DEPLOY_TEST_RUNNING"):
+        print("api")
     elif "pg_restore" in args:
         assert sys.stdin.read() == "fake archive\n"
     fail = os.environ.get("DEPLOY_TEST_FAIL")
@@ -134,11 +138,27 @@ def test_upgrade_orders_build_stop_backup_migrate_start(deployment):
     migrate = next(i for i, c in enumerate(calls) if c[-1] == "migrate")
     start = next(i for i, c in enumerate(calls) if "up" in c and c[-1] == "api")
     assert build < stop < backup < migrate < start
+    database = next(i for i, c in enumerate(calls) if "up" in c and c[-1] == "postgres")
+    assert database < stop
+    assert "--pull" in calls[build]
     assert (root / "config.env").read_text() == "unchanged-secrets\n"
     archive = next((root / "backups").glob("*/database.dump"))
     assert archive.read_text() == "fake archive\n"
     assert (archive.parent / "release").read_text().strip() == OLD
     assert not any("agenticiot.access.service" in call for call in calls)
+
+
+@pytest.mark.parametrize("running", ["", "1"])
+def test_backup_failure_does_not_create_migration_pending(deployment, running):
+    root, run = deployment
+    existing(root)
+    result, calls = run("upgrade", DEPLOY_TEST_FAIL="backup", DEPLOY_TEST_RUNNING=running)
+    assert result.returncode != 0
+    assert not (root / "pending").exists()
+    assert not any(c[-1] == "migrate" for c in calls)
+    restored = [c for c in calls if "up" in c and c[-1] == "api"]
+    assert bool(restored) == bool(running)
+    assert all(f"agenticiot-api:{NEW}" not in c for c in restored)
 
 
 @pytest.mark.parametrize("phase", ["build", "migration", "health"])

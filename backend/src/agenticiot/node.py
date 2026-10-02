@@ -4,18 +4,22 @@ import argparse
 import asyncio
 import fcntl
 import json
+import logging
 import os
+import random
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import WebSocketException
 
 from agenticiot.adapters import AdapterError, light_change
 from agenticiot.edge import EdgeRuntime
+
+logger = logging.getLogger(__name__)
 
 
 class NodeRuntime:
@@ -29,6 +33,7 @@ class NodeRuntime:
         self.bindings, self.jobs, self.calls = {}, {}, {}
         self.device_slots, self.read_slots = asyncio.Semaphore(8), asyncio.Semaphore(4)
         self.locks = {}
+        self.clock_offset = 0.0
 
     async def journal(self, fn, *args):
         return await asyncio.get_running_loop().run_in_executor(self.executor, fn, *args)
@@ -50,6 +55,12 @@ class NodeRuntime:
                     "CREATE TABLE IF NOT EXISTS rejected_outbox "
                     "(sequence INTEGER PRIMARY KEY, code TEXT NOT NULL)"
                 )
+                self.worker.db.execute(
+                    "CREATE TABLE IF NOT EXISTS deliveries (command_id TEXT PRIMARY KEY)"
+                )
+                self.worker.db.execute(
+                    "CREATE TABLE IF NOT EXISTS tombstones (command_id TEXT PRIMARY KEY)"
+                )
 
         await self.journal(quarantine_table)
 
@@ -65,6 +76,10 @@ class NodeRuntime:
         await asyncio.wait_for((self.data if data else self.control).put(message), 2)
 
     def prepare(self, command):
+        if self.worker.db.execute(
+            "SELECT 1 FROM tombstones WHERE command_id=?", (command["id"],)
+        ).fetchone():
+            return False
         previous = self.worker.db.execute(
             "SELECT result FROM jobs WHERE command_id=?", (command["id"],)
         ).fetchone()
@@ -86,7 +101,9 @@ class NodeRuntime:
         if adapter is None or command.get("simulated") is not True:
             raise AdapterError("Unsupported binding")
         light_change(command)
-        if datetime.fromisoformat(command["deadline"]) <= datetime.now(UTC):
+        if datetime.fromisoformat(command["deadline"]) <= datetime.now(UTC) + timedelta(
+            seconds=self.clock_offset
+        ):
             with self.worker.db:
                 self.worker.record(
                     command["id"],
@@ -103,6 +120,29 @@ class NodeRuntime:
         with self.worker.db:
             self.worker.db.execute("INSERT INTO intents VALUES (?)", (command["id"],))
         return True
+
+    def receive_command(self, command_id):
+        with self.worker.db:
+            self.worker.db.execute("INSERT OR IGNORE INTO deliveries VALUES (?)", (command_id,))
+
+    def reconcile(self, command_id):
+        with self.worker.db:
+            result = self.worker.db.execute(
+                "SELECT result FROM jobs WHERE command_id=?", (command_id,)
+            ).fetchone()
+            if result:
+                self.worker.queue(f"/edge/commands/{command_id}/result", json.loads(result[0]))
+                # A saved uncertain result still needs an execution barrier.
+                if json.loads(result[0]).get("error_code") != "execution_uncertain":
+                    return
+            self.worker.db.execute("INSERT OR IGNORE INTO tombstones VALUES (?)", (command_id,))
+            intent = self.worker.db.execute(
+                "SELECT 1 FROM intents WHERE command_id=?", (command_id,)
+            ).fetchone()
+            self.worker.queue(
+                f"/edge/commands/{command_id}/reconciled",
+                {"outcome": "uncertain" if intent or result else "not_executed"},
+            )
 
     async def execute(self, command):
         thing_id = command["thing_id"]
@@ -169,6 +209,8 @@ class NodeRuntime:
             ChatRequest.model_validate(body | {"model": "local"})
             if body["model"] not in config["models"]:
                 raise ValueError("Model not approved")
+            if config.get("include_usage") is True:
+                body = body | {"stream_options": {"include_usage": True}}
             url = config["url"]
             parsed = urlsplit(url)
             if (
@@ -259,11 +301,14 @@ class NodeRuntime:
             ping_timeout=10,
             proxy=None,
         ) as ws:
+            handshake_started = asyncio.get_running_loop().time()
             await ws.send(
                 json.dumps(
                     {
                         "type": "hello",
-                        "version": 1,
+                        "version": 2,
+                        "capacity": 16,
+                        "node_time": datetime.now(UTC).isoformat(),
                         "registration": {
                             "title": "Node Runtime",
                             "adapters": list(self.worker.adapters),
@@ -274,6 +319,17 @@ class NodeRuntime:
             welcome = json.loads(await asyncio.wait_for(ws.recv(), 10))
             if welcome.get("type") != "welcome":
                 raise ValueError("Node handshake rejected")
+            if "server_time" in welcome:
+                self.clock_offset = (
+                    datetime.fromisoformat(welcome["server_time"]) - datetime.now(UTC)
+                ).total_seconds()
+            logger.info(
+                "Node handshake: round_trip_ms=%.1f clock_offset_seconds=%.3f",
+                (asyncio.get_running_loop().time() - handshake_started) * 1000,
+                self.clock_offset,
+            )
+            inflight = {}
+            upload_wake = asyncio.Event()
 
             def identity():
                 old = self.worker.db.execute("SELECT edge_id FROM identity").fetchone()
@@ -309,9 +365,17 @@ class NodeRuntime:
                         if old is None or old.done():
                             self.jobs = {k: v for k, v in self.jobs.items() if not v.done()}
                             if len(self.jobs) >= 16:
-                                raise ValueError("Node command capacity exceeded")
+                                await self.emit({"type": "busy", "command_id": command["id"]})
+                                continue
+                            await self.journal(self.receive_command, command["id"])
+                            await self.emit({"type": "received", "command_id": command["id"]})
                             self.jobs[command["id"]] = asyncio.create_task(self.execute(command))
+                    elif kind == "reconcile":
+                        task = self.jobs.get(message["command_id"])
+                        if task is None or task.done():
+                            await self.journal(self.reconcile, message["command_id"])
                     elif kind == "ack":
+                        inflight.pop(message["sequence"], None)
 
                         def ack(sequence=message["sequence"]):
                             with self.worker.db:
@@ -320,7 +384,23 @@ class NodeRuntime:
                                 )
 
                         await self.journal(ack)
+                        upload_wake.set()
                     elif kind == "reject":
+                        if message["code"] not in {
+                            "sequence_conflict",
+                            "result_conflict",
+                            "invalid_message",
+                            "resource_not_found",
+                            "invalid_evidence_sequence",
+                            "invalid_command_stage",
+                        }:
+                            raise OSError("Retryable evidence rejection: " + message["code"])
+                        inflight.pop(message["sequence"], None)
+                        logger.warning(
+                            "Evidence quarantined: sequence=%s code=%s",
+                            message["sequence"],
+                            message["code"],
+                        )
 
                         def quarantine(seq=message["sequence"], code=message["code"]):
                             with self.worker.db:
@@ -331,6 +411,7 @@ class NodeRuntime:
 
                         # Keep evidence, but allow later records to progress.
                         await self.journal(quarantine)
+                        upload_wake.set()
                     elif kind == "inference":
                         self.calls = {k: v for k, v in self.calls.items() if not v.done()}
                         if len(self.calls) >= 2 or message["invocation_id"] in self.calls:
@@ -350,27 +431,49 @@ class NodeRuntime:
                             task.cancel()
 
             async def uploads():
+                last_status = -10.0
                 while True:
+                    upload_wake.clear()
 
                     def pending():
                         return self.worker.db.execute(
                             "SELECT sequence,path,payload FROM outbox WHERE sequence NOT IN "
-                            "(SELECT sequence FROM rejected_outbox) ORDER BY sequence LIMIT 64"
+                            "(SELECT sequence FROM rejected_outbox) ORDER BY sequence LIMIT 1"
                         ).fetchall()
 
                     for seq, path, payload in await self.journal(pending):
+                        now = asyncio.get_running_loop().time()
+                        if now - inflight.get(seq, -10) < 5:
+                            continue
                         parts = path.split("/")
                         result = parts[2] == "commands"
                         await self.emit(
                             {
-                                "type": "result" if result else "observation",
+                                "type": parts[4] if result else "observation",
                                 "sequence": seq,
                                 "command_id" if result else "thing_id": parts[3],
                                 "data": json.loads(payload),
                             }
                         )
-                    await self.emit({"type": "ping"})
-                    await asyncio.sleep(0.5)
+                        inflight[seq] = now
+                    clock = asyncio.get_running_loop().time()
+                    if clock - last_status >= 5:
+
+                        def stats():
+                            total = self.worker.db.execute(
+                                "SELECT count(*) FROM outbox"
+                            ).fetchone()[0]
+                            quarantined = self.worker.db.execute(
+                                "SELECT count(*) FROM rejected_outbox"
+                            ).fetchone()[0]
+                            return {"pending": total - quarantined, "quarantined": quarantined}
+
+                        await self.emit({"type": "ping", "journal": await self.journal(stats)})
+                        last_status = clock
+                    try:
+                        await asyncio.wait_for(upload_wake.wait(), 0.5)
+                    except TimeoutError:
+                        pass
 
             async def observations():
                 while True:
@@ -388,8 +491,23 @@ class NodeRuntime:
                 await asyncio.gather(*tasks, *self.calls.values(), return_exceptions=True)
                 self.calls.clear()
 
+    async def run_forever(self, url, token):
+        delay = 1.0
+        while True:
+            started = asyncio.get_running_loop().time()
+            try:
+                await self.run_connection(url, token)
+            except (OSError, TimeoutError, WebSocketException) as error:
+                # Never log headers, credentials, URLs or inference content.
+                logger.warning("Node reconnect: %s; retry in %.1fs", type(error).__name__, delay)
+            if asyncio.get_running_loop().time() - started > 30:
+                delay = 1.0
+            await asyncio.sleep(delay + random.uniform(0, delay / 4))
+            delay = min(delay * 2, 30)
+
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="ws://127.0.0.1:8000/v1/nodes/channel")
     parser.add_argument("--data-dir", type=Path, default=Path(".local/node"))
@@ -425,12 +543,7 @@ def main():
             )
             await node.start()
             try:
-                while True:
-                    try:
-                        await node.run_connection(args.url, token)
-                    except (OSError, TimeoutError, ConnectionClosed):
-                        pass
-                    await asyncio.sleep(2)
+                await node.run_forever(args.url, token)
             finally:
                 await node.stop()
 

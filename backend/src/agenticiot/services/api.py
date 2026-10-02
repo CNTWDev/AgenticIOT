@@ -224,6 +224,7 @@ def admit(app, principal, body, key):
         credential = session.get(NodeCredential, row.node_id)
         if credential is None or not credential.enabled:
             raise APIError(409, "node_disabled", "Node is not enabled")
+        app.state.node_hub.get(row.node_id)
         call = Invocation(
             id=uuid4().hex,
             domain_id=principal.domain_id,
@@ -238,7 +239,7 @@ def admit(app, principal, body, key):
         )
         session.add(call)
         session.commit()
-        return row, call.id
+        return row, call.id, call.deadline
 
 
 def mark_running(app, call_id):
@@ -282,11 +283,33 @@ def expire_metadata(app):
     with Session(app.state.engine) as session, session.begin():
         session.execute(
             update(Invocation)
-            .where(Invocation.state.in_(["admitted", "running"]), Invocation.deadline <= now)
+            .where(
+                Invocation.state.in_(["admitted", "running"]),
+                Invocation.deadline <= now - timedelta(seconds=5),
+            )
             .values(state="unknown", completed_at=now)
         )
         # Deduplication is explicitly bounded to the same 30-day metadata window.
         session.execute(delete(Invocation).where(Invocation.created_at < now - timedelta(days=30)))
+        from agenticiot.runtime.models import Command, Observation, StateProjection
+
+        # Never delete command evidence, reconciliation evidence, or current projections.
+        old_observations = (
+            select(Observation.id)
+            .where(
+                Observation.received_at < now - timedelta(days=30),
+                Observation.command_id.is_(None),
+                ~select(StateProjection.thing_id)
+                .where(StateProjection.observation_id == Observation.id)
+                .exists(),
+                ~select(Command.id)
+                .where(Command.resolution["observation_id"].astext == Observation.id)
+                .exists(),
+            )
+            .order_by(Observation.received_at)
+            .limit(500)
+        )
+        session.execute(delete(Observation).where(Observation.id.in_(old_observations)))
 
 
 def check_active(app, principal, service_id):
@@ -315,7 +338,9 @@ def metadata(call_id: str, principal: Authenticated, session: Database):
     )
     if row is None:
         raise APIError(404, "resource_not_found", "Invocation not found")
-    if row.state in {"admitted", "running"} and row.deadline < datetime.now(UTC):
+    if row.state in {"admitted", "running"} and row.deadline < datetime.now(UTC) - timedelta(
+        seconds=5
+    ):
         row.state, row.completed_at = "unknown", datetime.now(UTC)
         session.commit()
     return {
@@ -350,7 +375,11 @@ async def chat(
 ):
     app = request.app
     principal.require("service:invoke")
-    service, call_id = await anyio.to_thread.run_sync(admit, app, principal, body, idempotency_key)
+    service, call_id, deadline = await anyio.to_thread.run_sync(
+        admit, app, principal, body, idempotency_key
+    )
+    remaining = max(0, (deadline - datetime.now(UTC)).total_seconds())
+    stream_deadline = asyncio.get_running_loop().time() + remaining
     try:
         connection = app.state.node_hub.get(service.node_id)
         if sum(len(c.streams) for c in app.state.node_hub.connections.values()) >= 32:
@@ -386,7 +415,7 @@ async def chat(
         status, usage = "unknown", None
         checked_at, output_bytes = 0.0, 0
         try:
-            async with asyncio.timeout(60):
+            async with asyncio.timeout_at(stream_deadline):
                 while not connection.closed:
                     now = asyncio.get_running_loop().time()
                     if now - checked_at >= 1:
@@ -452,7 +481,8 @@ async def chat(
             connection.streams.pop(call_id, None)
             with anyio.CancelScope(shield=True):
                 try:
-                    await connection.send({"type": "cancel", "invocation_id": call_id})
+                    if status != "succeeded":
+                        await connection.send({"type": "cancel", "invocation_id": call_id})
                 except (TimeoutError, APIError):
                     pass
                 await anyio.to_thread.run_sync(finish, app, call_id, status, usage)

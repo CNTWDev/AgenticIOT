@@ -1,5 +1,7 @@
 # AgenticIoT 设备与 Node 本地服务技术架构
 
+Runtime amendment: [ADR 0012](../adr/0012-pilot-recovery-and-transport-bounds.md) defines current recovery, command credits, clock handling, transport bounds and retention. Product boundaries remain unchanged; [operational guidance](../operations/pilot-recovery.md) explains the upgrade.
+
 版本：0.3。日期：2026-10-02。状态：产品边界与行为规则已接受；性能、容量和兼容性待实验验证。
 
 本版依据两轮评审共识收窄 v0.2：AgenticIoT 负责设备的可信操作，以及经 Node 主动连接访问私有网络中的获准服务。首版 AI Services 只接 Node 上的本地服务，采用请求内流式响应；设备命令继续异步持久化。Agent 工具与设备事件进入首版主线。

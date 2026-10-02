@@ -2,6 +2,7 @@ export type SessionInfo = {
   subject_ref: string;
   domain_ref: string;
   role: "operator" | "viewer";
+  permissions: string[];
 };
 export type Page<T> = { items: T[]; next_cursor: string | null };
 export type Capabilities = {
@@ -76,6 +77,14 @@ const messages: Record<string, string> = {
   resource_not_found: "记录不存在或不在当前授权域内。",
 };
 
+export class RegistryError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export async function registryRequest<T>(
   token: string,
   path: string,
@@ -99,7 +108,7 @@ export async function registryRequest<T>(
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const message = messages[body.code] ?? `请求失败（${response.status}）`;
-    throw new Error(message);
+    throw new RegistryError(message, response.status);
   }
   return response.json() as Promise<T>;
 }

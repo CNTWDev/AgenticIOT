@@ -85,6 +85,10 @@ class CommandView(SchemaModel):
     trace_id: str
     receipts: list[ReceiptView]
     simulated: Literal[True] = True
+    blocked: bool = False
+    received_at: datetime | None = None
+    barrier_at: datetime | None = None
+    resolution: dict | None = None
 
 
 class ObservedValue(SchemaModel):
@@ -99,5 +103,6 @@ class ObservedValue(SchemaModel):
 
 class ThingState(SchemaModel):
     thing_id: ResourceID
+    observation_id: ResourceID | None = None
     properties: dict[str, ObservedValue]
     simulated: Literal[True] = True

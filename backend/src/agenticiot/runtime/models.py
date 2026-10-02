@@ -3,6 +3,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -65,6 +66,11 @@ class Command(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     trace_id: Mapped[str] = mapped_column(String(32))
     result_hash: Mapped[str | None] = mapped_column(String(64))
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    dispatch_sequence: Mapped[int | None] = mapped_column(BigInteger)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    barrier_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolution: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class Receipt(Base):
@@ -101,6 +107,7 @@ class Observation(Base):
     )
     values: Mapped[dict[str, Any]] = mapped_column(JSONB)
     request_hash: Mapped[str] = mapped_column(String(64))
+    source_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class StateProjection(Base):
@@ -117,3 +124,9 @@ class StateProjection(Base):
 # Preserve existing physical index names across the non-destructive domain migration.
 for _model in (EdgeNode, Binding, Command):
     Index(f"ix_{_model.__tablename__}_domain_ref", _model.domain_ref)
+
+Index("ix_command_dispatch", Command.edge_id, Command.stage, Command.created_at, Command.id)
+Index("ix_command_blocked", Command.edge_id, Command.blocked)
+Index("ix_observation_received", Observation.received_at)
+Index("ix_command_reconciliation_observation", Command.resolution["observation_id"].astext)
+Index("ix_state_observation", StateProjection.observation_id)

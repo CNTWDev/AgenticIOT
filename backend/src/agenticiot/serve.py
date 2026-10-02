@@ -1,6 +1,7 @@
 """Single-process launcher with drain-before-transport-close semantics."""
 
 import argparse
+import logging
 
 import uvicorn
 
@@ -22,6 +23,7 @@ class DrainingServer(uvicorn.Server):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8000, type=int)
@@ -32,7 +34,6 @@ def main():
             host=args.host,
             port=args.port,
             workers=1,
-            limit_concurrency=128,
             ws="websockets-sansio",
             ws_max_size=262144,
             ws_max_queue=16,

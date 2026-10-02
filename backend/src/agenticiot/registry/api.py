@@ -36,11 +36,12 @@ Cursor = Annotated[str | None, Query(max_length=2000)]
 
 
 @router.get("/management/session", tags=["Management"], operation_id="getSession")
-def get_session(principal: Authenticated) -> dict[str, str]:
+def get_session(principal: Authenticated) -> dict[str, str | list[str]]:
     return {
         "subject_ref": principal.subject_ref,
         "domain_ref": principal.domain_ref,
         "role": principal.role,
+        "permissions": sorted(principal.permissions),
     }
 
 

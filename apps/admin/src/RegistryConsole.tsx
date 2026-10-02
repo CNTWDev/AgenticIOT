@@ -488,6 +488,9 @@ function RegistryWorkspace({
                   token={connection.token}
                   thingId={selected.id}
                   operator={connection.role === "operator"}
+                  actuator={
+                    connection.permissions?.includes("device:act") ?? false
+                  }
                   onRefreshDevice={async () => {
                     await reload();
                     await inspect(selected);

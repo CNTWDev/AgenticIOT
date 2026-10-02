@@ -1,5 +1,7 @@
 # Linux 单机部署
 
+Current operations amendment: [pilot recovery guide](../operations/pilot-recovery.md) documents database-before-backup ordering, migration-only `pending`, restoration of previously running apps, supervised Nodes and explicit PostgreSQL patch maintenance.
+
 此脚本部署 PostgreSQL 18、API 和管理后台，适用于当前软件试点。它不会部署家庭 Node、安装模型、开放防火墙或自动配置公网 TLS。真实设备、真实模型和家庭网络时延仍需按实验计划验证。
 
 ## 首次安装
@@ -46,7 +48,7 @@ sudo bash scripts/deploy.sh restart
 
 也可使用已安装版本的 `/opt/agenticiot/releases/<current文件中的SHA>/scripts/deploy.sh`。不同命令必须使用同一个目录；自定义时每次显式传入 `sudo env AGENTICIOT_DEPLOY_DIR=/srv/agenticiot bash scripts/deploy.sh ...`。不要修改版本快照；修改配置后执行 `restart`。数据库密码不能仅靠修改配置轮换，必须同时协调数据库角色密码。HMAC 轮换应保留前一密钥，参见接口说明。
 
-升级顺序固定为：拉取并构建新镜像 → 停止后台/API，等待最长 25 秒退出 → 备份数据库和配置 → 执行迁移 → 启动 API 并检查就绪 → 启动后台并检查健康 → 更新成功版本。PostgreSQL 容器不随应用升级重建。单实例部署有停机窗口，Node 会断线重连，进行中的推理可能成为 unknown；这不是无损滚动升级。
+Upgrade order: fetch and build with `--pull`, validate identity configuration, start PostgreSQL, stop apps (up to 25 seconds), back up, write `pending`, migrate, start and verify apps, record success. Backup failure restores apps only if they were running before maintenance and does not create `pending`. PostgreSQL is not recreated during application upgrade. Node reconnects and in-flight inference may become unknown; this is not zero-downtime deployment.
 
 备份使用 PostgreSQL 自定义格式，并验证归档目录可读；不等于完成恢复演练。独立 `backup` 可在运行中执行，提供数据库一致性快照；升级备份则在应用停止后执行。备份包含敏感对话元数据、资源和配置密钥，应另行加密异地保存、制定保留期并定期恢复演练。脚本不自动删除备份、镜像、版本或数据卷，也不升级 PostgreSQL 主版本。
 

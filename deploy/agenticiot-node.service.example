@@ -1,0 +1,25 @@
+[Unit]
+Description=AgenticIoT outbound Node runtime
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=agenticiot-node
+Group=agenticiot-node
+WorkingDirectory=/opt/agenticiot-node
+EnvironmentFile=/etc/agenticiot-node.env
+ExecStart=/opt/agenticiot-node/.venv/bin/python -m agenticiot.node --url wss://iot.example.com/v1/nodes/channel --data-dir /var/lib/agenticiot-node --services /etc/agenticiot-node-services.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+StateDirectory=agenticiot-node
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

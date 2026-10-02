@@ -58,6 +58,8 @@ class NodeView(SchemaModel):
     enabled: bool
     online: bool
     last_seen_at: datetime
+    pending_uploads: int | None = None
+    quarantined_uploads: int | None = None
 
 
 class NodeList(SchemaModel):
@@ -139,6 +141,7 @@ def create_node(data: NodeCreate, request: Request, principal: Operator, session
     "/grants/{grant_id}/revoke", operation_id="revokeDomainGrant", response_model=ActivationView
 )
 def revoke_grant(grant_id: str, request: Request, principal: Operator, session: Database):
+    session.scalar(select(Domain).where(Domain.id == principal.domain_id).with_for_update())
     grant = session.scalar(
         select(DomainGrant)
         .join(DomainAlias)
@@ -147,6 +150,26 @@ def revoke_grant(grant_id: str, request: Request, principal: Operator, session: 
     )
     if grant is None:
         raise APIError(404, "resource_not_found", "Grant not found")
+    if grant.enabled and "domain:manage" in grant.permissions:
+        others = session.scalars(
+            select(DomainGrant)
+            .join(DomainAlias)
+            .where(
+                DomainAlias.domain_id == principal.domain_id,
+                DomainGrant.id != grant.id,
+                DomainGrant.enabled.is_(True),
+            )
+        ).all()
+        if not any(
+            "domain:manage" in g.permissions
+            and (g.expires_at is None or g.expires_at > datetime.now(UTC))
+            for g in others
+        ):
+            raise APIError(
+                409,
+                "last_domain_manager",
+                "Grant another domain manager before revoking this grant",
+            )
     grant.enabled = False
     RegistryService(session, principal, request.state.trace_id).audit("grant.revoked", grant.id)
     session.commit()
@@ -174,6 +197,12 @@ def nodes(request: Request, principal: Authenticated, session: Database):
                     (conn := request.app.state.node_hub.connections.get(n.id)) and not conn.closed
                 ),
                 "last_seen_at": n.last_seen_at,
+                "pending_uploads": conn.journal_stats.get("pending")
+                if conn and not conn.closed
+                else None,
+                "quarantined_uploads": conn.journal_stats.get("quarantined")
+                if conn and not conn.closed
+                else None,
             }
             for n, c in rows
         ]

@@ -1,5 +1,7 @@
 # AgenticIoT 实施计划
 
+Pilot hardening update: recovery/credits, clock-skew handling, independent heartbeat, bounded admission, console permissions and pre-migration recovery are implemented under [ADR 0012](../adr/0012-pilot-recovery-and-transport-bounds.md). The [review disposition](../operations/pilot-recovery.md) distinguishes implemented fixes from pending household-network, model, real-device and sustained-load validation.
+
 版本：0.3。日期：2026-10-02。状态：首版软件链路已实现；真实模型、网络、硬件及生产门禁未完成。
 
 依据[架构 v0.3](device-node-services-v0.3.md)与 [ADR 0009](../adr/0009-node-local-services-and-agent-access.md)。[v0.1 历史计划](implementation-plan-v0.1.md)保留原交付记录，不再决定下一步顺序。
